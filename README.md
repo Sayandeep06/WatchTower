@@ -2,7 +2,20 @@
 
 **Secure, scalable authentication and user management for modern applications.**
 
-WatchTower is a production-ready authentication service that handles user registration, login, session management, and security for your applications. Built for developers who need enterprise-grade auth without the complexity.
+WatchTower is a production-ready authentication service that handles user registration, login, session management, and security for your applications. Built with Express.js and designed for developers who need enterprise-grade auth without the complexity.
+
+## Tech Stack
+
+- **Backend Framework:** Express.js
+- **Runtime:** Bun
+- **Language:** TypeScript
+- **Database:** PostgreSQL with Prisma ORM
+- **Cache:** Redis
+- **Authentication:** JWT (Access Tokens) + Rotating Refresh Tokens
+- **Password Hashing:** Argon2id
+- **Email Service:** SendGrid
+- **Validation:** Zod
+- **Monorepo:** Turborepo
 
 ## What WatchTower Does
 
@@ -467,6 +480,37 @@ function App() {
 }
 ```
 
+## Architecture
+
+WatchTower is built as a monorepo with the following structure:
+
+```
+WatchTower/
+├── apps/
+│   └── core/              # Express.js API server
+│       ├── src/
+│       │   ├── controllers/   # Route handlers
+│       │   ├── middleware/    # Express middleware
+│       │   ├── routes/        # API route definitions
+│       │   ├── services/      # Business logic
+│       │   └── utils/         # Helper functions
+│       └── package.json
+└── packages/
+    └── database/          # Prisma schema & migrations
+        ├── prisma/
+        └── package.json
+```
+
+### Express.js Application
+
+The core API is built with Express.js and follows a clean architecture:
+
+- **Controllers:** Handle HTTP requests/responses
+- **Services:** Contain business logic
+- **Middleware:** Request processing, authentication, validation
+- **Routes:** API endpoint definitions
+- **Utils:** Shared utilities and helpers
+
 ## Configuration
 
 ### Environment Variables
@@ -484,7 +528,8 @@ REDIS_URL=redis://localhost:6379
 
 # JWT
 JWT_SECRET=your-secret-key
-JWT_EXPIRATION=15m
+JWT_ACCESS_EXPIRATION=15m
+JWT_REFRESH_EXPIRATION=30d
 
 # Email (SendGrid)
 SENDGRID_API_KEY=your-api-key
@@ -493,6 +538,8 @@ EMAIL_FROM=noreply@yourapp.com
 # OAuth
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
+GITHUB_CLIENT_ID=your-github-client-id
+GITHUB_CLIENT_SECRET=your-github-client-secret
 ```
 
 ## Use Cases

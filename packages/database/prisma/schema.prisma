@@ -1,0 +1,384 @@
+// ============================================================================
+// WatchTower Database Schema
+// Express.js Authentication and User Management System
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// ENUMS - Type definitions for constrained values
+// ============================================================================
+
+/// User account status states
+enum AccountStatus {
+  ACTIVE    // Normal active account, can login
+  SUSPENDED // Temporarily suspended, cannot login
+  DELETED   // Soft deleted, marked for permanent deletion
+}
+
+/// Types of verification tokens we send to users
+enum VerificationTokenType {
+  EMAIL_VERIFY   // Email verification during registration
+  PASSWORD_RESET // Password reset link sent to email
+  PHONE_VERIFY   // Phone number verification (future use)
+}
+
+/// Device types for session tracking
+enum SessionDeviceType {
+  MOBILE  // Mobile phone or tablet app
+  DESKTOP // Desktop computer browser
+  TABLET  // Tablet browser
+  TV      // Smart TV or streaming device
+  OTHER   // Unknown or unclassified device
+}
+
+/// Security event types for audit logging
+enum SecurityEventType {
+  LOGIN_SUCCESS           // Successful login
+  LOGIN_FAILURE           // Failed login attempt (wrong password, etc)
+  LOGOUT                  // User logged out
+  PASSWORD_CHANGE         // Password changed successfully
+  PASSWORD_RESET_REQUEST  // User requested password reset
+  PASSWORD_RESET_COMPLETE // Password reset completed
+  EMAIL_VERIFY            // Email verified
+  MFA_ENABLE              // 2FA enabled
+  MFA_DISABLE             // 2FA disabled
+  MFA_CHALLENGE           // 2FA code entered
+  SESSION_REVOKE          // Session manually revoked
+  ACCOUNT_LOCKED          // Account locked due to failed attempts
+  SUSPICIOUS_ACTIVITY     // Suspicious login detected
+  NEW_DEVICE_LOGIN        // Login from new device
+  PROFILE_UPDATE          // Profile information updated
+  EMAIL_CHANGE            // Email address changed
+  ACCOUNT_DELETE          // Account deleted
+}
+
+/// Security event severity levels
+enum SecurityEventSeverity {
+  INFO     // Informational event (normal operation)
+  WARNING  // Warning (unusual but not critical)
+  CRITICAL // Critical security event (requires attention)
+}
+
+/// Email delivery status
+enum EmailStatus {
+  QUEUED   // Queued for sending
+  SENT     // Successfully sent to email provider
+  FAILED   // Failed to send
+  BOUNCED  // Email bounced back
+}
+
+/// Multi-factor authentication methods
+enum MFAMethod {
+  TOTP // Time-based One-Time Password (Google Authenticator, Authy)
+  SMS  // SMS-based codes (future implementation)
+}
+// ============================================================================
+// CORE TABLES - Primary models for authentication
+// ============================================================================
+
+/// User accounts - Core table storing all user information and credentials
+model User {
+  // Primary identification
+  id    String @id @default(uuid()) @db.Uuid /// Unique user identifier (UUID v4)
+  email String @unique @db.VarChar(255)      /// User's email address (must be unique)
+
+  // Authentication & Security
+  emailVerified       Boolean       @default(false)  /// Whether email has been verified
+  passwordHash        String?       @db.VarChar(255) /// Hashed password (Argon2id), null for OAuth-only users
+  mfaEnabled          Boolean       @default(false)  /// Whether 2FA is enabled for this user
+  failedLoginAttempts Int           @default(0)      /// Counter for failed login attempts (resets on success)
+  lockedUntil         DateTime?                      /// Account lock expiration time (null if not locked)
+  passwordChangedAt   DateTime?                      /// When password was last changed (for invalidating old sessions)
+
+  // Account Status
+  accountStatus    AccountStatus @default(ACTIVE) /// Current account state (ACTIVE/SUSPENDED/DELETED)
+  suspensionReason String?       @db.Text         /// Reason for suspension (if suspended)
+  deletedAt        DateTime?                      /// Soft delete timestamp (null if not deleted)
+
+  // Profile Information
+  fullName String @db.VarChar(255) /// User's full name (required)
+
+  // Login Tracking
+  lastLoginAt     DateTime? /// Timestamp of last successful login
+  lastLoginIp     String?   @db.VarChar(45) /// IP address of last login (IPv4 or IPv6)
+  lastLoginDevice String?   @db.VarChar(255) /// Device info from last login
+
+  // Timestamps
+  createdAt DateTime @default(now()) /// Account creation timestamp
+  updatedAt DateTime @updatedAt      /// Last update timestamp (auto-managed)
+
+  // Relations - Connected tables
+  sessions           Session[]             /// All active and expired sessions for this user
+  verificationTokens VerificationToken[]   /// Email verification and password reset tokens
+  securityEvents     SecurityEvent[]       /// Security audit log entries
+  mfaSecret          MFASecret?            /// 2FA secret (one-to-one, only if MFA enabled)
+  loginHistory       LoginHistory[]        /// Login history for user dashboard
+  emailLogs          EmailLog[]            /// Emails sent to this user
+
+  // Indexes for query performance
+  @@index([email])         // Fast email lookups (even though unique)
+  @@index([accountStatus]) // Filter by account status
+  @@index([createdAt])     // Time-based queries (user growth analytics)
+  @@index([deletedAt])     // Soft delete queries (WHERE deletedAt IS NULL)
+  @@map("users")           // Table name in database
+}
+
+/// User sessions - Stores refresh tokens and tracks active user sessions
+/// Each session represents one login from one device
+model Session {
+  // Primary identification
+  id     String @id @default(uuid()) @db.Uuid /// Unique session identifier
+  userId String @db.Uuid                      /// User who owns this session (foreign key)
+
+  // Token Management
+  refreshTokenHash String  @unique @db.VarChar(255) /// Hashed refresh token (SHA-256)
+  accessTokenJti   String? @db.VarChar(255)         /// JWT ID for access token revocation
+
+  // Device & Location Information
+  deviceType SessionDeviceType /// Type of device (MOBILE/DESKTOP/TABLET/TV/OTHER)
+  browser    String?            @db.VarChar(100) /// Browser name and version (parsed from user agent)
+  os         String?            @db.VarChar(100) /// Operating system (parsed from user agent)
+  ipAddress  String             @db.VarChar(45)  /// IP address of the session (IPv4 or IPv6)
+  userAgent  String             @db.Text         /// Full user agent string
+  location   Json?              @db.JsonB        /// Geo-location data {country, region, city, lat, lng}
+
+  // Session Settings
+  rememberMe Boolean @default(false) /// Whether "Remember Me" was checked (affects expiration)
+
+  // Session Lifecycle
+  expiresAt      DateTime  /// When this session expires (30 days if rememberMe, else 1 day)
+  lastActivityAt DateTime  @default(now()) /// Last time this session was used
+  createdAt      DateTime  @default(now()) /// When session was created
+
+  // Revocation (logout, password change, manual revoke)
+  revokedAt     DateTime? /// When session was revoked (null if still active)
+  revokedReason String?   @db.VarChar(255) /// Why it was revoked (USER_LOGOUT, PASSWORD_CHANGE, etc)
+  revokedBy     String?   @db.VarChar(50)  /// Who revoked it (USER, ADMIN, SYSTEM, SECURITY)
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Indexes
+  @@index([userId])                // Find all sessions for a user
+  @@index([expiresAt])             // Cleanup expired sessions
+  @@index([userId, expiresAt])     // Find user's active sessions (most common query)
+  @@map("sessions")
+}
+
+/// Verification tokens - Email verification and password reset tokens
+/// Tokens are single-use and expire after 24 hours
+model VerificationToken {
+  // Primary identification
+  id     String @id @default(uuid()) @db.Uuid /// Unique token identifier
+  userId String? @db.Uuid                     /// User ID (nullable, as user may not exist yet during registration)
+  email  String  @db.VarChar(255)             /// Email address this token was sent to
+
+  // Token Data
+  tokenHash String                 @unique @db.VarChar(255) /// Hashed token (SHA-256), actual token sent in email
+  type      VerificationTokenType                           /// Type: EMAIL_VERIFY, PASSWORD_RESET, PHONE_VERIFY
+
+  // Token Lifecycle
+  expiresAt DateTime  /// When token expires (typically 24 hours from creation)
+  createdAt DateTime  @default(now()) /// When token was created
+  usedAt    DateTime? /// When token was used (null if not yet used)
+  usedIp    String?   @db.VarChar(45) /// IP address that used the token
+
+  // Additional Data
+  metadata Json? @db.JsonB /// Extra data: {redirectUrl, requestIp, requestDevice}
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Indexes
+  @@index([email])       // Find tokens by email
+  @@index([type])        // Filter by token type
+  @@index([expiresAt])   // Cleanup expired tokens
+  @@index([email, type]) // Find specific token type for email (most common query)
+  @@map("verification_tokens")
+}
+
+/// Security events - Audit log for all authentication and security events
+/// Used for security monitoring, analytics, and compliance
+model SecurityEvent {
+  // Primary identification
+  id     String  @id @default(uuid()) @db.Uuid /// Unique event identifier
+  userId String? @db.Uuid                      /// User ID (nullable for events before user exists)
+  email  String? @db.VarChar(255)              /// Email address involved in the event
+
+  // Event Details
+  eventType SecurityEventType      /// Type of event (LOGIN_SUCCESS, LOGIN_FAILURE, etc)
+  severity  SecurityEventSeverity  /// Severity level (INFO, WARNING, CRITICAL)
+  action    String                 @db.VarChar(255) /// Human-readable action description
+  status    String                 @db.VarChar(50)  /// Event outcome (SUCCESS, FAILURE, BLOCKED)
+
+  // Source Information
+  ipAddress String  @db.VarChar(45) /// IP address where event originated
+  userAgent String? @db.Text        /// Browser/client user agent string
+  location  Json?   @db.JsonB       /// Geo-location: {country, city, lat, lng}
+
+  // Security Analysis
+  riskScore Int     @default(0)   /// Risk score 0-100 (0=safe, 100=very suspicious)
+  flagged   Boolean @default(false) /// Manually flagged for review by security team
+  metadata  Json?   @db.JsonB       /// Event-specific data varies by event type
+
+  // Review (for flagged events)
+  reviewedAt DateTime? /// When event was reviewed (null if not reviewed)
+  reviewedBy String?   @db.Uuid /// Admin who reviewed this event
+
+  // Timestamp
+  createdAt DateTime @default(now()) /// When event occurred
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Indexes
+  @@index([userId])              // User's security timeline
+  @@index([eventType])           // Filter by event type
+  @@index([severity])            // Filter by severity
+  @@index([createdAt])           // Time-based queries and cleanup
+  @@index([flagged])             // Security review queue
+  @@index([userId, eventType])   // User-specific event analysis
+  @@index([userId, createdAt])   // User timeline with pagination
+  @@map("security_events")
+}
+
+/// MFA secrets - Two-factor authentication secrets and backup codes
+/// One per user, only exists if user has enabled 2FA
+model MFASecret {
+  // Primary identification
+  id     String @id @default(uuid()) @db.Uuid /// Unique MFA record identifier
+  userId String @unique @db.Uuid              /// User ID (one-to-one relationship)
+
+  // MFA Configuration
+  secret  String    @db.VarChar(255)  /// Encrypted TOTP secret key (base32 encoded)
+  method  MFAMethod @default(TOTP)    /// MFA method (TOTP for Google Authenticator)
+
+  // Backup Codes (for account recovery if phone is lost)
+  backupCodes     String[] @db.VarChar(255) /// Array of hashed backup codes (10 codes)
+  backupCodesUsed Int      @default(0)      /// How many backup codes have been used
+
+  // Setup & Usage
+  qrCodeUrl  String?   @db.Text  /// QR code data URL for initial setup (cleared after verification)
+  verifiedAt DateTime?           /// When 2FA was successfully verified (null during setup)
+  lastUsedAt DateTime?           /// Last successful 2FA authentication
+
+  // Security
+  failedAttempts Int @default(0) /// Failed 2FA attempts counter (resets on success)
+
+  // Timestamps
+  createdAt DateTime @default(now()) /// When 2FA was enabled
+  updatedAt DateTime @updatedAt      /// Last update
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // No additional indexes needed (always queried by userId which is unique)
+  @@map("mfa_secrets")
+}
+
+// ============================================================================
+// SUPPORTING TABLES - Logging and rate limiting
+// ============================================================================
+/// Rate limit tracking - Prevents brute force attacks and API abuse
+/// Tracks request counts within time windows for IP addresses or users
+model RateLimitEntry {
+  // Primary identification
+  id String @id @default(uuid()) @db.Uuid /// Unique rate limit entry
+
+  // Rate Limit Key
+  identifier String @db.VarChar(255) /// IP address or user ID being rate limited
+  action     String @db.VarChar(100) /// Action being limited (LOGIN_ATTEMPT, PASSWORD_RESET, etc)
+
+  // Tracking
+  count   Int  /// Number of attempts in this window
+  blocked Boolean @default(false) /// Whether further attempts are blocked
+
+  // Time Window
+  windowStart DateTime /// Start of rate limit window
+  windowEnd   DateTime /// End of rate limit window
+  createdAt   DateTime @default(now()) /// When entry was created
+
+  // Indexes - CRITICAL for performance (checked on every request)
+  @@index([identifier, action]) // Fast lookup for rate limit check
+  @@index([windowEnd])           // Cleanup expired windows
+  @@map("rate_limit_entries")
+}
+
+/// Login history - Simplified login log for user dashboard
+/// Shows users their recent login activity
+model LoginHistory {
+  // Primary identification
+  id     String @id @default(uuid()) @db.Uuid /// Unique login record
+  userId String @db.Uuid                      /// User who logged in
+
+  // Login Outcome
+  success       Boolean  /// Whether login was successful
+  failureReason String? @db.VarChar(255) /// Reason for failure (if failed)
+  mfaUsed       Boolean @default(false)  /// Whether 2FA was used
+
+  // Source Information
+  ipAddress  String  @db.VarChar(45)  /// IP address of login attempt
+  deviceType String  @db.VarChar(50)  /// Device type (MOBILE, DESKTOP, etc)
+  browser    String? @db.VarChar(100) /// Browser name and version
+  os         String? @db.VarChar(100) /// Operating system
+  userAgent  String  @db.Text         /// Full user agent string
+  location   Json?   @db.JsonB        /// Geo-location data
+
+  // Timestamp
+  createdAt DateTime @default(now()) /// When login occurred
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Indexes
+  @@index([userId])              // Find user's login history
+  @@index([userId, createdAt])   // User dashboard with pagination (most common query)
+  @@map("login_history")
+}
+
+/// Email log - Tracks all emails sent by the system
+/// Used for delivery monitoring, analytics, and debugging
+model EmailLog {
+  // Primary identification
+  id     String  @id @default(uuid()) @db.Uuid /// Unique email log entry
+  userId String? @db.Uuid                      /// User email was sent to (nullable)
+
+  // Email Details
+  to       String @db.VarChar(255) /// Recipient email address
+  from     String @db.VarChar(255) /// Sender email address
+  subject  String @db.VarChar(500) /// Email subject line
+  template String @db.VarChar(100) /// Template used (WELCOME, EMAIL_VERIFICATION, etc)
+
+  // Delivery Status
+  status       EmailStatus  /// Current status (QUEUED, SENT, FAILED, BOUNCED)
+  provider     String       @db.VarChar(50)  /// Email provider (SendGrid, AWS SES, etc)
+  providerId   String?      @db.VarChar(255) /// Provider's message ID
+  errorMessage String?      @db.Text         /// Error message if failed
+
+  // Delivery Tracking
+  sentAt      DateTime? /// When email was sent to provider
+  deliveredAt DateTime? /// When email was delivered to inbox
+  openedAt    DateTime? /// First time email was opened (if tracking enabled)
+  clickedAt   DateTime? /// First time link was clicked (if tracking enabled)
+
+  // Timestamp
+  createdAt DateTime @default(now()) /// When email was queued
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Indexes
+  @@index([userId])    // Find emails sent to user
+  @@index([status])    // Monitor delivery status
+  @@index([template])  // Analytics by email type
+  @@index([createdAt]) // Time-based queries and cleanup
+  @@map("email_logs")
+}
