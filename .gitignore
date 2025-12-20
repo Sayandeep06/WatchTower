@@ -36,3 +36,7 @@ yarn-error.log*
 # Misc
 .DS_Store
 *.pem
+
+MICROSERVICES_ARCHITECTURE.md
+PLAN.md
+NESTJS_STRUCTURE.md
