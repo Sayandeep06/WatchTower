@@ -1,15 +1,13 @@
 {
-  "name": "core",
+  "name": "redis-client",
   "module": "index.ts",
   "type": "module",
   "private": true,
   "devDependencies": {
     "@types/bun": "latest"
   },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "db": "workspace:*",
-    "zod": "^4.2.1"
+  "exports": {
+    ".": "./index.ts"
   },
   "peerDependencies": {
     "typescript": "^5"
