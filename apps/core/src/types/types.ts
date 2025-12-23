@@ -6,6 +6,7 @@ export interface AccessTokenPayload {
     sessionId: string;    // Session ID for revocation
     email: string;        // User email
     deviceType: string;   // Device type
+    jti?: string;         // JWT ID (unique identifier for this token)
     iat?: number;         // Issued at (auto-added by JWT)
     exp?: number;         // Expires at (auto-added by JWT)
 }

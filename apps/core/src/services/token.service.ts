@@ -69,6 +69,16 @@ export class TokenService {
         });
     }
 
+    async validateSession(sessionId: string) {
+        const session = await prisma.session.findUnique({
+            where: { id: sessionId }
+        })
+        if (!session) throw new Error("Invalid session");
+        if (session.revokedAt) throw new Error("Session has been revoked");
+        if (session.expiresAt < new Date()) throw new Error("Session has expired");
+        return session;
+    }
+
     async revokeAllUserSessions(userId: string, reason: string = "PASSWORD_CHANGE"): Promise<number> {
         const result = await prisma.session.updateMany({
             where: { userId, revokedAt: null },
@@ -78,6 +88,16 @@ export class TokenService {
             },
         });
         return result.count;
+    }
+
+    getTokenPayload(token: string): AccessTokenPayload;
+    getTokenPayload<K extends keyof AccessTokenPayload>(token: string, key: K): AccessTokenPayload[K];
+    getTokenPayload<K extends keyof AccessTokenPayload>(token: string, key?: K): AccessTokenPayload | AccessTokenPayload[K] {
+        const payload = this.verifyAccessToken(token);
+        if (key !== undefined) {
+            return payload[key];
+        }
+        return payload;
     }
 
     private generateAccessToken(params: {
